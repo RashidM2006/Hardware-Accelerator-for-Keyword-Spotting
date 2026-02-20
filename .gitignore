@@ -1,0 +1,3 @@
+/.cogni
+/simulation_results/*
+!/simulation_results/*.py

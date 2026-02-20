@@ -1,0 +1,8 @@
+# DEPS configuration for FFT simulation
+
+# FFT testbench simulation
+fft_test:
+  deps:
+    - src/fft.sv
+    - src/tb_fft.sv
+  top: tb_fft
