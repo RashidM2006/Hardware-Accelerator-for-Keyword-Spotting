@@ -22,6 +22,8 @@ module fft #(
         IDLE,
         LOAD_INPUT,
         COMPUTE,
+        SYNC,
+        FINAL_SYNC,
         OUTPUT
     } state_t;
     
@@ -30,6 +32,7 @@ module fft #(
     // Counters and control
     logic [4:0] input_count;
     logic [5:0] output_count;  // 6 bits needed to count to 32
+    logic [5:0] output_latched; // latched index for combinational read (fixes timing)
     logic [2:0] stage_num;
     logic [5:0] compute_count;
     
@@ -151,17 +154,22 @@ module fft #(
                 end
                 
                 COMPUTE: begin
-                    // one butterfly per cycle
-                    int span, group_size, pair_idx, k, idx1, idx2;
+                    int span, b, k, idx1, idx2, tw_idx;
                     logic signed [DATA_WIDTH-1:0] a_re, a_im, b_re, b_im;
                     logic signed [DATA_WIDTH-1:0] tw_re, tw_im, b_tw_re, b_tw_imag;
                     
-                    span = 1 << stage_num;
-                    group_size = span << 1;
-                    pair_idx = compute_count;
-                    k = pair_idx % span;
-                    idx1 = (pair_idx / span) * group_size + k;
+                    span = 1 << stage_num;  // butterfly distance (1, 2, 4, 8, 16)
+                    
+                    // Pair selectoin:
+                    // b = lower stage_num bits of compute_count
+                    // k = upper bits of compute_count
+                    // idx1 = (k * 2 * span) + b
+                    // idx2 = idx1 + span
+                    b = compute_count & (span - 1);           // lower bits for position within pair group
+                    k = compute_count >> stage_num;            // upper bits for group number
+                    idx1 = (k << (stage_num + 1)) | b;        // (k * 2 * span) + b
                     idx2 = idx1 + span;
+                    tw_idx = b;
                     
                     // load a and b
                     a_re = data_real[idx1];
@@ -169,36 +177,61 @@ module fft #(
                     b_re = data_real[idx2];
                     b_im = data_imag[idx2];
                     
-                    get_twiddle(k, stage_num, tw_re, tw_im);
+                    // twiddle and multiply b * W
+                    get_twiddle(tw_idx, stage_num, tw_re, tw_im);
                     complex_mult(b_re, b_im, tw_re, tw_im, b_tw_re, b_tw_imag);
                     
-                    // temp buffers to avoid read-after-write hazard
-                    temp_real[idx1] <= a_re + b_tw_re;
-                    temp_imag[idx1] <= a_im + b_tw_imag;
-                    temp_real[idx2] <= a_re - b_tw_re;
-                    temp_imag[idx2] <= a_im - b_tw_imag;
+                    // Butterfly with scaling to prevent overflow
+                    temp_real[idx1] <= (a_re + b_tw_re) >>> 1;
+                    temp_imag[idx1] <= (a_im + b_tw_imag) >>> 1;
+                    temp_real[idx2] <= (a_re - b_tw_re) >>> 1;
+                    temp_imag[idx2] <= (a_im - b_tw_imag) >>> 1;
                     
                     if (compute_count == 6'd15) begin  // 16 butterflies per stage
                         compute_count <= 6'd0;
-                        // copy temp back to data for next stage
-                        for (int i = 0; i < FFT_SIZE; i++) begin
-                            data_real[i] <= temp_real[i];
-                            data_imag[i] <= temp_imag[i];
-                        end
-                        
-                        if (stage_num == 3'd4) begin
-                            state <= OUTPUT;
-                            output_count <= 6'd0;
-                        end else begin
-                            stage_num <= stage_num + 1'b1;
-                        end
+                        // transition to SYNC to copy temp results
+                        state <= SYNC;
                     end else begin
                         compute_count <= compute_count + 1'b1;
                     end
                 end
                 
+                SYNC: begin
+                    // wait 1 cycle for non-blocking temp assignments to settle, then copy
+                    for (int i = 0; i < FFT_SIZE; i++) begin
+                        data_real[i] <= temp_real[i];
+                        data_imag[i] <= temp_imag[i];
+                    end
+                    
+                    if (stage_num == 3'd4) begin
+                        // need extra wait cycle before OUTPUT after completing stage 4
+                        state <= FINAL_SYNC;
+                    end else begin
+                        stage_num <= stage_num + 1'b1;
+                        state <= COMPUTE;
+                    end
+                end
+                
+                FINAL_SYNC: begin
+                    // extra cycle to let final stage temp→data copy settle before OUTPUT
+                    state <= OUTPUT;
+                    output_count <= 6'd0;
+                    output_latched <= 6'd0;  // initialize latched index
+                end
+                
                 OUTPUT: begin
                     // finished when counter is 32
+                    if (output_count == 6'd0) begin
+                        // verify data array on first output cycle
+                        $display("[VERIFY] First OUTPUT cycle - data_real values:");
+                        for (int i = 0; i < 32; i++) begin
+                            $display("[VERIFY] data_real[%0d] = %h", i, data_real[i]);
+                        end
+                    end
+                    
+                    // latch current position for combinational read
+                    output_latched <= output_count;
+                    
                     if (output_count == 5'd31) begin
                         // bin 31 is last valid output, prepare to finish
                         valid_out <= 1'b1;
@@ -207,6 +240,7 @@ module fft #(
                         // done, return to idle
                         valid_out <= 1'b0;
                         output_count <= 6'd0;
+                        output_latched <= 6'd0;
                         state <= IDLE;
                     end else begin
                         valid_out <= 1'b1;
@@ -218,8 +252,8 @@ module fft #(
     end
     
     // output assignments
-    assign data_real_out = data_real[output_count[4:0]];
-    assign data_imag_out = data_imag[output_count[4:0]];
+    assign data_real_out = data_real[output_latched[4:0]];
+    assign data_imag_out = data_imag[output_latched[4:0]];
 
 endmodule
 

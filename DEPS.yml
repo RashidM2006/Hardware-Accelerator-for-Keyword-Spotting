@@ -1,8 +1,15 @@
 # DEPS configuration for FFT simulation
 
-# FFT testbench simulation
+# FFT testbench simulation - Square wave
 fft_test:
   deps:
     - src/fft.sv
     - src/tb_fft.sv
   top: tb_fft
+
+# FFT testbench simulation - Pure tones
+fft_tones_test:
+  deps:
+    - src/fft.sv
+    - src/tb_fft_tones.sv
+  top: tb_fft_tones
