@@ -32,7 +32,6 @@ module fft #(
     // Counters and control
     logic [4:0] input_count;
     logic [5:0] output_count;  // 6 bits needed to count to 32
-    logic [5:0] output_latched; // latched index for combinational read (fixes timing)
     logic [2:0] stage_num;
     logic [5:0] compute_count;
     
@@ -109,7 +108,6 @@ module fft #(
         if (reset) begin
             state <= IDLE;
             ready <= 1'b1;
-            valid_out <= 1'b0;
             input_count <= 5'd0;
             output_count <= 6'd0;
             stage_num <= 3'd0;
@@ -126,7 +124,6 @@ module fft #(
             case (state)
                 IDLE: begin
                     ready <= 1'b1;
-                    valid_out <= 1'b0;
                     if (valid_in) begin
                         // begin loading
                         data_real[bit_reverse(5'd0)] <= data_real_in;
@@ -216,11 +213,10 @@ module fft #(
                     // extra cycle to let final stage temp→data copy settle before OUTPUT
                     state <= OUTPUT;
                     output_count <= 6'd0;
-                    output_latched <= 6'd0;  // initialize latched index
                 end
                 
                 OUTPUT: begin
-                    // finished when counter is 32
+                    // finished when counter reaches 32
                     if (output_count == 6'd0) begin
                         // verify data array on first output cycle
                         $display("[VERIFY] First OUTPUT cycle - data_real values:");
@@ -229,21 +225,12 @@ module fft #(
                         end
                     end
                     
-                    // latch current position for combinational read
-                    output_latched <= output_count;
-                    
-                    if (output_count == 5'd31) begin
-                        // bin 31 is last valid output, prepare to finish
-                        valid_out <= 1'b1;
-                        output_count <= output_count + 1'b1;
-                    end else if (output_count == 6'd32) begin
-                        // done, return to idle
-                        valid_out <= 1'b0;
+                    if (output_count == 6'd31) begin
+                        // just output last bin, then go to IDLE
                         output_count <= 6'd0;
-                        output_latched <= 6'd0;
                         state <= IDLE;
                     end else begin
-                        valid_out <= 1'b1;
+                        // output current bin, increment for next cycle
                         output_count <= output_count + 1'b1;
                     end
                 end
@@ -251,9 +238,11 @@ module fft #(
         end
     end
     
-    // output assignments
-    assign data_real_out = data_real[output_latched[4:0]];
-    assign data_imag_out = data_imag[output_latched[4:0]];
+    // output assignments (natural order output - already bit-reversed due to DIT processing)
+    // output_count tracks 0-32; read data_real/imag[output_count], stopping at 31
+    assign data_real_out = data_real[output_count[4:0]];
+    assign data_imag_out = data_imag[output_count[4:0]];
+    assign valid_out = (state == OUTPUT) && (output_count < 6'd32);
 
 endmodule
 
