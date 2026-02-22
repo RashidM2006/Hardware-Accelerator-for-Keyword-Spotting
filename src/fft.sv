@@ -48,12 +48,10 @@ module fft #(
     
     // Twiddle factor ROM
     function automatic void get_twiddle(
-        input int k, input int stage,
+        input int idx,
         output logic signed [DATA_WIDTH-1:0] tw_re, tw_im
     );
-        int idx;
-        idx = (k << stage) & 31;
-        case (idx)
+        case (idx & 31)
             0:  begin tw_re = 16'sh4000; tw_im = 16'sh0000; end
             1:  begin tw_re = 16'sh3FB1; tw_im = -16'sh0648; end
             2:  begin tw_re = 16'sh3EC5; tw_im = -16'sh0C8C; end
@@ -166,7 +164,7 @@ module fft #(
                     k = compute_count >> stage_num;            // upper bits for group number
                     idx1 = (k << (stage_num + 1)) | b;        // (k * 2 * span) + b
                     idx2 = idx1 + span;
-                    tw_idx = b;
+                    tw_idx = b << (4 - stage_num);
                     
                     // load a and b
                     a_re = data_real[idx1];
@@ -175,7 +173,7 @@ module fft #(
                     b_im = data_imag[idx2];
                     
                     // twiddle and multiply b * W
-                    get_twiddle(tw_idx, stage_num, tw_re, tw_im);
+                    get_twiddle(tw_idx, tw_re, tw_im);
                     complex_mult(b_re, b_im, tw_re, tw_im, b_tw_re, b_tw_imag);
                     
                     // Butterfly with scaling to prevent overflow
